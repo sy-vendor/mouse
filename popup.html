@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>网页坐标连点器</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <p class="eyebrow">MOUSE LOOP</p>
+          <h1>网页坐标连点器</h1>
+        </div>
+        <span id="status" class="status idle">已停止</span>
+      </header>
+
+      <section class="card setup">
+        <label>
+          <span>循环次数</span>
+          <input id="repeatCount" type="number" min="0" step="1" value="0" />
+          <small>0 = 无限循环</small>
+        </label>
+        <label class="check-row">
+          <input id="showMarker" type="checkbox" checked />
+          <span>点击时显示标记</span>
+        </label>
+      </section>
+
+      <section class="steps-section">
+        <div class="section-title">
+          <div>
+            <h2>点击步骤</h2>
+            <p>坐标相对于网页可视区域；间隔表示本步执行后等待多久。</p>
+          </div>
+          <button id="addStep" class="icon-button" type="button" title="添加步骤">＋</button>
+        </div>
+        <div class="labels" aria-hidden="true">
+          <span>序号</span><span>X</span><span>Y</span><span>间隔 ms</span><span></span>
+        </div>
+        <div id="steps" class="steps"></div>
+        <button id="pickStep" class="pick-button" type="button">● 录制一轮点击操作</button>
+      </section>
+
+      <p id="message" class="message" role="status"></p>
+
+      <footer>
+        <button id="stop" class="secondary" type="button">停止</button>
+        <button id="start" class="primary" type="button">保存并开始</button>
+      </footer>
+    </main>
+
+    <template id="stepTemplate">
+      <div class="step-row">
+        <span class="step-number"></span>
+        <input class="x" type="number" min="0" step="1" aria-label="X 坐标" />
+        <input class="y" type="number" min="0" step="1" aria-label="Y 坐标" />
+        <input class="delay" type="number" min="0" step="50" aria-label="间隔毫秒" />
+        <button class="remove" type="button" title="删除此步骤">×</button>
+      </div>
+    </template>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

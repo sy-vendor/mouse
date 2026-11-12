@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "网页坐标连点器",
+  "version": "1.0.0",
+  "description": "按坐标与间隔重复点击当前网页，浏览器最小化后仍可继续执行页面内点击。",
+  "permissions": ["storage", "tabs", "scripting"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "网页坐标连点器",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": true,
+      "match_about_blank": true,
+      "match_origin_as_fallback": true
+    }
+  ]
+}
