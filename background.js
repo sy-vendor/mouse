@@ -51,6 +51,8 @@ async function handleMessage(message, sender) {
       x: Math.round(message.x),
       y: Math.round(message.y),
       frameId: sender.frameId ?? 0,
+      frameUrl: sender.url || message.frameUrl || '',
+      target: message.target || null,
       delay: 1000,
       clickedAt: now
     });
@@ -80,7 +82,7 @@ async function handleMessage(message, sender) {
     if (!recording?.points.length) return { ok: false, error: '还没有录制任何点击' };
     const last = recording.points.at(-1);
     last.delay = Math.max(0, Date.now() - last.clickedAt);
-    const steps = recording.points.map(({ x, y, frameId, delay }) => ({ x, y, frameId, delay }));
+    const steps = recording.points.map(({ clickedAt, ...step }) => step);
     await chrome.storage.local.set({ pickedSteps: steps });
     await chrome.storage.session.remove(recordingKey(tabId));
     broadcast(tabId, { type: 'PICKER_DEACTIVATE' });
@@ -88,13 +90,34 @@ async function handleMessage(message, sender) {
   }
 
   if (message.type === 'DISPATCH_FRAME_CLICK') {
-    broadcast(tabId, {
+    const clickMessage = {
       type: 'FRAME_CLICK',
       x: message.x,
       y: message.y,
+      target: message.target || null,
       showMarker: message.showMarker
-    }, { frameId: message.frameId ?? 0 });
-    return { ok: true };
+    };
+    const frames = await chrome.webNavigation.getAllFrames({ tabId }).catch(() => []);
+    const candidates = [];
+    const original = frames.find((frame) => frame.frameId === (message.frameId ?? 0));
+    if (original) candidates.push(original);
+    if (message.frameUrl) {
+      for (const frame of frames) {
+        if (frame.url === message.frameUrl && !candidates.some((item) => item.frameId === frame.frameId)) candidates.push(frame);
+      }
+    }
+    if (!candidates.length) candidates.push({ frameId: message.frameId ?? 0 });
+    let lastResponse = { ok: false, reason: '目标页面框架尚未就绪' };
+    for (const frame of candidates) {
+      try {
+        const response = await chrome.tabs.sendMessage(tabId, clickMessage, { frameId: frame.frameId });
+        if (response?.ok) return response;
+        if (response) lastResponse = response;
+      } catch (_) {
+        lastResponse = { ok: false, reason: '目标页面框架尚未就绪' };
+      }
+    }
+    return lastResponse;
   }
 
   return { ok: false };

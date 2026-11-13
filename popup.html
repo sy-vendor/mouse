@@ -22,6 +22,11 @@
           <input id="repeatCount" type="number" min="0" step="1" value="0" />
           <small>0 = 无限循环</small>
         </label>
+        <label>
+          <span>延时余量</span>
+          <input id="delayMargin" type="number" min="0" max="500" step="10" value="30" />
+          <small>%</small>
+        </label>
         <label class="check-row">
           <input id="showMarker" type="checkbox" checked />
           <span>点击时显示标记</span>
@@ -32,7 +37,7 @@
         <div class="section-title">
           <div>
             <h2>点击步骤</h2>
-            <p>坐标相对于网页可视区域；间隔表示本步执行后等待多久。</p>
+            <p>录制步骤会绑定网页元素或画布；间隔表示本步执行后等待多久。</p>
           </div>
           <button id="addStep" class="icon-button" type="button" title="添加步骤">＋</button>
         </div>

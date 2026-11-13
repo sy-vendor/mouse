@@ -1,11 +1,24 @@
 #import <Cocoa/Cocoa.h>
 #import <ApplicationServices/ApplicationServices.h>
 #import <unistd.h>
+#import <math.h>
 
 @interface MLStep : NSObject
 @property CGFloat x;
 @property CGFloat y;
 @property NSInteger delay;
+@property NSString *bundleID;
+@property NSString *appName;
+@property NSString *windowTitle;
+@property CGFloat relativeX;
+@property CGFloat relativeY;
+@property CGFloat windowWidth;
+@property CGFloat windowHeight;
+@property NSInteger windowID;
+@property CGFloat sampleR;
+@property CGFloat sampleG;
+@property CGFloat sampleB;
+@property BOOL hasSample;
 + (instancetype)stepWithX:(CGFloat)x y:(CGFloat)y delay:(NSInteger)delay;
 - (NSDictionary *)dictionary;
 @end
@@ -19,7 +32,15 @@
     return step;
 }
 - (NSDictionary *)dictionary {
-    return @{ @"x": @(self.x), @"y": @(self.y), @"delay": @(self.delay) };
+    return @{
+        @"x": @(self.x), @"y": @(self.y), @"delay": @(self.delay),
+        @"bundleID": self.bundleID ?: @"", @"appName": self.appName ?: @"",
+        @"windowTitle": self.windowTitle ?: @"", @"relativeX": @(self.relativeX),
+        @"relativeY": @(self.relativeY), @"windowWidth": @(self.windowWidth),
+        @"windowHeight": @(self.windowHeight), @"windowID": @(self.windowID), @"sampleR": @(self.sampleR),
+        @"sampleG": @(self.sampleG), @"sampleB": @(self.sampleB),
+        @"hasSample": @(self.hasSample)
+    };
 }
 @end
 
@@ -32,6 +53,7 @@
 @property NSButton *recordButton;
 @property NSButton *startButton;
 @property NSButton *stopButton;
+@property NSButton *smartWaitButton;
 @property id eventMonitor;
 @property BOOL recording;
 @property BOOL running;
@@ -41,6 +63,7 @@
 @property NSInteger completedLoops;
 @property id activityToken;
 @property BOOL permissionPromptRequested;
+@property NSDate *readinessStartedAt;
 @end
 
 @implementation AppDelegate
@@ -114,6 +137,12 @@
     hint.textColor = NSColor.secondaryLabelColor;
     [content addSubview:hint];
 
+    self.smartWaitButton = [NSButton checkboxWithTitle:@"智能等待" target:self action:@selector(toggleSmartWait:)];
+    self.smartWaitButton.frame = NSMakeRect(318, 459, 128, 30);
+    self.smartWaitButton.state = [[NSUserDefaults standardUserDefaults] boolForKey:@"smartWait"] ? NSControlStateValueOn : NSControlStateValueOff;
+    self.smartWaitButton.toolTip = @"等待录制时的目标画面出现后再点击；需要屏幕录制权限";
+    [content addSubview:self.smartWaitButton];
+
     self.recordButton = [self button:@"● 录制一轮" frame:NSMakeRect(456, 454, 120, 38) action:@selector(startRecording:)];
     [content addSubview:self.recordButton];
     [content addSubview:[self button:@"＋ 添加" frame:NSMakeRect(584, 454, 106, 38) action:@selector(addStep:)]];
@@ -128,10 +157,11 @@
     self.table.usesAlternatingRowBackgroundColors = YES;
     self.table.allowsMultipleSelection = YES;
     NSArray *columns = @[
-        @{ @"id": @"index", @"title": @"步骤", @"width": @70 },
-        @{ @"id": @"x", @"title": @"X 坐标", @"width": @140 },
-        @{ @"id": @"y", @"title": @"Y 坐标", @"width": @140 },
-        @{ @"id": @"delay", @"title": @"下一步间隔（ms）", @"width": @250 }
+        @{ @"id": @"index", @"title": @"步骤", @"width": @60 },
+        @{ @"id": @"app", @"title": @"目标 App", @"width": @120 },
+        @{ @"id": @"x", @"title": @"窗口 X", @"width": @100 },
+        @{ @"id": @"y", @"title": @"窗口 Y", @"width": @100 },
+        @{ @"id": @"delay", @"title": @"下一步间隔（ms）", @"width": @220 }
     ];
     for (NSDictionary *item in columns) {
         NSTableColumn *column = [[NSTableColumn alloc] initWithIdentifier:item[@"id"]];
@@ -190,9 +220,15 @@
         field.bezeled = YES;
         field.drawsBackground = YES;
         field.textColor = NSColor.labelColor;
-        if ([identifier isEqualToString:@"x"]) { field.stringValue = [NSString stringWithFormat:@"%.0f", step.x]; code = 1; }
-        if ([identifier isEqualToString:@"y"]) { field.stringValue = [NSString stringWithFormat:@"%.0f", step.y]; code = 2; }
+        if ([identifier isEqualToString:@"x"]) { field.stringValue = [NSString stringWithFormat:@"%.0f", step.bundleID.length ? step.relativeX : step.x]; code = 1; }
+        if ([identifier isEqualToString:@"y"]) { field.stringValue = [NSString stringWithFormat:@"%.0f", step.bundleID.length ? step.relativeY : step.y]; code = 2; }
         if ([identifier isEqualToString:@"delay"]) { field.stringValue = [NSString stringWithFormat:@"%ld", (long)step.delay]; code = 3; }
+        if ([identifier isEqualToString:@"app"]) {
+            field.stringValue = step.appName.length ? step.appName : @"屏幕坐标";
+            field.editable = NO;
+            field.bezeled = NO;
+            field.drawsBackground = NO;
+        }
     }
     field.tag = row * 10 + code;
     return cell;
@@ -202,10 +238,10 @@
     NSTextField *field = notification.object;
     NSInteger row = field.tag / 10;
     NSInteger code = field.tag % 10;
-    if (row < 0 || row >= self.steps.count) return;
+    if (row < 0 || (NSUInteger)row >= self.steps.count) return;
     MLStep *step = self.steps[row];
-    if (code == 1) step.x = field.doubleValue;
-    if (code == 2) step.y = field.doubleValue;
+    if (code == 1) { if (step.bundleID.length) step.relativeX = field.doubleValue; else step.x = field.doubleValue; }
+    if (code == 2) { if (step.bundleID.length) step.relativeY = field.doubleValue; else step.y = field.doubleValue; }
     if (code == 3) step.delay = MAX(0, field.integerValue);
     [self saveConfig];
 }
@@ -221,6 +257,77 @@
         }
     }
     return trusted;
+}
+
+- (void)toggleSmartWait:(NSButton *)sender {
+    BOOL enabled = sender.state == NSControlStateValueOn;
+    [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:@"smartWait"];
+    if (enabled && !CGPreflightScreenCaptureAccess()) {
+        CGRequestScreenCaptureAccess();
+        self.statusLabel.stringValue = @"智能等待需要屏幕录制权限；授权后请重启应用";
+    } else if (enabled && self.steps.count && !self.steps.firstObject.hasSample) {
+        self.statusLabel.stringValue = @"智能等待已开启；请重新录制以保存目标画面";
+    }
+}
+
+- (BOOL)isIgnoredBundleID:(NSString *)bundleID {
+    if (!bundleID.length) return NO;
+    return [@[
+        @"local.suyang.mouseloop", @"com.apple.dock",
+        @"com.apple.systemuiserver", @"com.apple.notificationcenterui",
+        @"com.apple.controlcenter"
+    ] containsObject:bundleID.lowercaseString];
+}
+
+- (NSDictionary *)windowMetadataAtPoint:(CGPoint)point {
+    CFArrayRef windowList = CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
+                                                       kCGNullWindowID);
+    NSArray *windows = CFBridgingRelease(windowList);
+    for (NSDictionary *info in windows) {
+        if ([info[(__bridge NSString *)kCGWindowLayer] integerValue] != 0) continue;
+        CGRect bounds = CGRectZero;
+        if (!CGRectMakeWithDictionaryRepresentation((__bridge CFDictionaryRef)info[(__bridge NSString *)kCGWindowBounds], &bounds)) continue;
+        if (!CGRectContainsPoint(bounds, point)) continue;
+        pid_t pid = (pid_t)[info[(__bridge NSString *)kCGWindowOwnerPID] intValue];
+        NSRunningApplication *app = [NSRunningApplication runningApplicationWithProcessIdentifier:pid];
+        NSString *bundleID = app.bundleIdentifier ?: @"";
+        if ([self isIgnoredBundleID:bundleID]) return nil;
+        return @{
+            @"bundleID": bundleID,
+            @"appName": app.localizedName ?: info[(__bridge NSString *)kCGWindowOwnerName] ?: @"",
+            @"windowTitle": info[(__bridge NSString *)kCGWindowName] ?: @"",
+            @"windowID": info[(__bridge NSString *)kCGWindowNumber] ?: @0,
+            @"windowX": @(bounds.origin.x), @"windowY": @(bounds.origin.y),
+            @"windowWidth": @(bounds.size.width), @"windowHeight": @(bounds.size.height)
+        };
+    }
+    return nil;
+}
+
+- (BOOL)sampleColorAtPoint:(CGPoint)point red:(CGFloat *)red green:(CGFloat *)green blue:(CGFloat *)blue {
+    if (!CGPreflightScreenCaptureAccess()) return NO;
+    CGRect rect = CGRectMake(point.x - 3, point.y - 3, 7, 7);
+    CGImageRef image = CGWindowListCreateImage(rect, kCGWindowListOptionOnScreenOnly, kCGNullWindowID, kCGWindowImageDefault);
+    if (!image) return NO;
+    NSBitmapImageRep *bitmap = [[NSBitmapImageRep alloc] initWithCGImage:image];
+    CGImageRelease(image);
+    CGFloat totalR = 0, totalG = 0, totalB = 0;
+    NSInteger count = 0;
+    for (NSInteger x = 0; x < bitmap.pixelsWide; x++) {
+        for (NSInteger y = 0; y < bitmap.pixelsHigh; y++) {
+            NSColor *color = [[bitmap colorAtX:x y:y] colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+            if (!color) continue;
+            totalR += color.redComponent;
+            totalG += color.greenComponent;
+            totalB += color.blueComponent;
+            count += 1;
+        }
+    }
+    if (!count) return NO;
+    *red = totalR / count;
+    *green = totalG / count;
+    *blue = totalB / count;
+    return YES;
 }
 
 - (void)installGlobalMonitor {
@@ -248,7 +355,14 @@
         if (event.type == NSEventTypeLeftMouseDown && selfRef.recording) {
             CGPoint point = CGEventGetLocation(event.CGEvent);
             NSDate *now = [NSDate date];
-            dispatch_async(dispatch_get_main_queue(), ^{ [selfRef recordPoint:point at:now]; });
+            NSDictionary *metadata = [selfRef windowMetadataAtPoint:point];
+            if (!metadata) return;
+            CGFloat red = 0, green = 0, blue = 0;
+            BOOL sampled = [[NSUserDefaults standardUserDefaults] boolForKey:@"smartWait"]
+                && [selfRef sampleColorAtPoint:point red:&red green:&green blue:&blue];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [selfRef recordPoint:point at:now metadata:metadata sampled:sampled red:red green:green blue:blue];
+            });
         }
     }];
 }
@@ -269,13 +383,32 @@
     [NSApp hide:nil];
 }
 
-- (void)recordPoint:(CGPoint)point at:(NSDate *)date {
+- (void)recordPoint:(CGPoint)point
+                 at:(NSDate *)date
+           metadata:(NSDictionary *)metadata
+            sampled:(BOOL)sampled
+                red:(CGFloat)red
+              green:(CGFloat)green
+               blue:(CGFloat)blue {
     if (!self.recording) return;
     MLStep *previous = self.steps.lastObject;
     if (previous && self.lastClickDate) {
         previous.delay = MAX(0, (NSInteger)llround([date timeIntervalSinceDate:self.lastClickDate] * 1000.0));
     }
-    [self.steps addObject:[MLStep stepWithX:point.x y:point.y delay:1000]];
+    MLStep *step = [MLStep stepWithX:point.x y:point.y delay:1000];
+    step.bundleID = metadata[@"bundleID"];
+    step.appName = metadata[@"appName"];
+    step.windowTitle = metadata[@"windowTitle"];
+    step.relativeX = point.x - [metadata[@"windowX"] doubleValue];
+    step.relativeY = point.y - [metadata[@"windowY"] doubleValue];
+    step.windowWidth = [metadata[@"windowWidth"] doubleValue];
+    step.windowHeight = [metadata[@"windowHeight"] doubleValue];
+    step.windowID = [metadata[@"windowID"] integerValue];
+    step.hasSample = sampled;
+    step.sampleR = red;
+    step.sampleG = green;
+    step.sampleB = blue;
+    [self.steps addObject:step];
     self.lastClickDate = date;
     self.statusLabel.stringValue = [NSString stringWithFormat:@"录制中：已记录 %ld 步", (long)self.steps.count];
     [self.table reloadData];
@@ -315,6 +448,70 @@
     [self saveConfig];
 }
 
+- (BOOL)resolvePointForStep:(MLStep *)step point:(CGPoint *)point error:(NSString **)error {
+    if (!step.bundleID.length) {
+        *point = CGPointMake(step.x, step.y);
+        return YES;
+    }
+    NSRunningApplication *targetApp = [NSRunningApplication runningApplicationsWithBundleIdentifier:step.bundleID].firstObject;
+    if (!targetApp) {
+        if (error) *error = [NSString stringWithFormat:@"目标 App 未运行：%@", step.appName ?: step.bundleID];
+        return NO;
+    }
+    NSArray *windows = CFBridgingRelease(CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
+                                                                    kCGNullWindowID));
+    NSDictionary *best = nil;
+    CGFloat bestArea = 0;
+    for (NSDictionary *info in windows) {
+        if ([info[(__bridge NSString *)kCGWindowOwnerPID] intValue] != targetApp.processIdentifier) continue;
+        if ([info[(__bridge NSString *)kCGWindowLayer] integerValue] != 0) continue;
+        CGRect bounds = CGRectZero;
+        if (!CGRectMakeWithDictionaryRepresentation((__bridge CFDictionaryRef)info[(__bridge NSString *)kCGWindowBounds], &bounds)) continue;
+        NSString *title = info[(__bridge NSString *)kCGWindowName] ?: @"";
+        NSInteger windowID = [info[(__bridge NSString *)kCGWindowNumber] integerValue];
+        if (step.windowID > 0 && windowID == step.windowID) {
+            best = info;
+            break;
+        }
+        if (step.windowTitle.length && [title isEqualToString:step.windowTitle]) {
+            best = info;
+            break;
+        }
+        CGFloat area = bounds.size.width * bounds.size.height;
+        if (area > bestArea) { best = info; bestArea = area; }
+    }
+    if (!best) {
+        if (error) *error = [NSString stringWithFormat:@"找不到可见窗口：%@", step.appName ?: step.bundleID];
+        return NO;
+    }
+    CGRect bounds = CGRectZero;
+    CGRectMakeWithDictionaryRepresentation((__bridge CFDictionaryRef)best[(__bridge NSString *)kCGWindowBounds], &bounds);
+    if (step.relativeX < 0 || step.relativeY < 0 || step.relativeX > bounds.size.width || step.relativeY > bounds.size.height) {
+        if (error) *error = [NSString stringWithFormat:@"%@ 窗口尺寸已改变，坐标超出窗口", step.appName ?: @"目标"];
+        return NO;
+    }
+    *point = CGPointMake(bounds.origin.x + step.relativeX, bounds.origin.y + step.relativeY);
+    [targetApp activateWithOptions:NSApplicationActivateIgnoringOtherApps];
+    return YES;
+}
+
+- (BOOL)screenMatchesStep:(MLStep *)step atPoint:(CGPoint)point {
+    if (self.smartWaitButton.state != NSControlStateValueOn || !step.hasSample) return YES;
+    CGFloat red = 0, green = 0, blue = 0;
+    if (![self sampleColorAtPoint:point red:&red green:&green blue:&blue]) return YES;
+    CGFloat distance = sqrt(pow(red - step.sampleR, 2) + pow(green - step.sampleG, 2) + pow(blue - step.sampleB, 2));
+    return distance <= 0.30;
+}
+
+- (void)schedulePlaybackAfter:(NSTimeInterval)delay {
+    [self.playTimer invalidate];
+    self.playTimer = [NSTimer scheduledTimerWithTimeInterval:MAX(0.05, delay)
+                                                      target:self
+                                                    selector:@selector(playNextStep:)
+                                                    userInfo:nil
+                                                     repeats:NO];
+}
+
 - (void)startPlayback:(id)sender {
     [self.window makeFirstResponder:nil];
     if (![self ensureAccessibility]) return;
@@ -327,6 +524,7 @@
     self.running = YES;
     self.playIndex = 0;
     self.completedLoops = 0;
+    self.readinessStartedAt = nil;
     self.startButton.enabled = NO;
     self.recordButton.enabled = NO;
     self.stopButton.enabled = YES;
@@ -335,13 +533,44 @@
     self.activityToken = [[NSProcessInfo processInfo] beginActivityWithOptions:(NSActivityUserInitiated | NSActivityLatencyCritical)
                                                                         reason:@"Running mouse macro"];
     [NSApp hide:nil];
-    self.playTimer = [NSTimer scheduledTimerWithTimeInterval:0.45 target:self selector:@selector(playNextStep:) userInfo:nil repeats:NO];
+    [self schedulePlaybackAfter:0.45];
 }
 
 - (void)playNextStep:(NSTimer *)timer {
     if (!self.running || !self.steps.count) return;
     MLStep *step = self.steps[self.playIndex];
-    CGPoint point = CGPointMake(step.x, step.y);
+    CGPoint point = CGPointZero;
+    NSString *resolutionError = nil;
+    if (![self resolvePointForStep:step point:&point error:&resolutionError]) {
+        [self stopPlayback:nil];
+        self.statusLabel.stringValue = [NSString stringWithFormat:@"已暂停：%@", resolutionError];
+        return;
+    }
+
+    NSApp.dockTile.badgeLabel = [NSString stringWithFormat:@"%ld·%ld", (long)self.completedLoops + 1, (long)self.playIndex + 1];
+    self.statusLabel.stringValue = [NSString stringWithFormat:@"运行中：第 %ld 轮，第 %ld/%ld 步",
+                                    (long)self.completedLoops + 1, (long)self.playIndex + 1, (long)self.steps.count];
+
+    if (self.smartWaitButton.state == NSControlStateValueOn && step.hasSample) {
+        if (!self.readinessStartedAt) {
+            self.readinessStartedAt = [NSDate date];
+            CGEventRef hover = CGEventCreateMouseEvent(NULL, kCGEventMouseMoved, point, kCGMouseButtonLeft);
+            if (hover) { CGEventPost(kCGHIDEventTap, hover); CFRelease(hover); }
+            [self schedulePlaybackAfter:0.15];
+            return;
+        }
+        if (![self screenMatchesStep:step atPoint:point]) {
+            if (-[self.readinessStartedAt timeIntervalSinceNow] >= 12.0) {
+                [self stopPlayback:nil];
+                self.statusLabel.stringValue = [NSString stringWithFormat:@"智能等待超时：第 %ld 步画面不匹配", (long)self.playIndex + 1];
+                return;
+            }
+            [self schedulePlaybackAfter:0.25];
+            return;
+        }
+    }
+    self.readinessStartedAt = nil;
+
     CGEventRef move = CGEventCreateMouseEvent(NULL, kCGEventMouseMoved, point, kCGMouseButtonLeft);
     CGEventRef down = CGEventCreateMouseEvent(NULL, kCGEventLeftMouseDown, point, kCGMouseButtonLeft);
     CGEventRef up = CGEventCreateMouseEvent(NULL, kCGEventLeftMouseUp, point, kCGMouseButtonLeft);
@@ -351,7 +580,7 @@
     if (up) { CGEventPost(kCGHIDEventTap, up); CFRelease(up); }
 
     self.playIndex += 1;
-    if (self.playIndex >= self.steps.count) {
+    if ((NSUInteger)self.playIndex >= self.steps.count) {
         self.playIndex = 0;
         self.completedLoops += 1;
         NSInteger requestedLoops = MAX(0, self.repeatField.integerValue);
@@ -361,11 +590,7 @@
             return;
         }
     }
-    self.playTimer = [NSTimer scheduledTimerWithTimeInterval:(MAX(0, step.delay) / 1000.0)
-                                                      target:self
-                                                    selector:@selector(playNextStep:)
-                                                    userInfo:nil
-                                                     repeats:NO];
+    [self schedulePlaybackAfter:(MAX(100, step.delay) / 1000.0)];
 }
 
 - (void)stopPlayback:(id)sender {
@@ -373,6 +598,8 @@
     self.running = NO;
     [self.playTimer invalidate];
     self.playTimer = nil;
+    self.readinessStartedAt = nil;
+    NSApp.dockTile.badgeLabel = @"";
     if (self.activityToken) {
         [[NSProcessInfo processInfo] endActivity:self.activityToken];
         self.activityToken = nil;
@@ -418,16 +645,29 @@
     if (!data) return;
     NSDictionary *config = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
     for (NSDictionary *item in config[@"steps"]) {
-        [self.steps addObject:[MLStep stepWithX:[item[@"x"] doubleValue]
-                                             y:[item[@"y"] doubleValue]
-                                         delay:MAX(0, [item[@"delay"] integerValue])]];
+        MLStep *step = [MLStep stepWithX:[item[@"x"] doubleValue]
+                                       y:[item[@"y"] doubleValue]
+                                   delay:MAX(0, [item[@"delay"] integerValue])];
+        step.bundleID = item[@"bundleID"];
+        step.appName = item[@"appName"];
+        step.windowTitle = item[@"windowTitle"];
+        step.relativeX = [item[@"relativeX"] doubleValue];
+        step.relativeY = [item[@"relativeY"] doubleValue];
+        step.windowWidth = [item[@"windowWidth"] doubleValue];
+        step.windowHeight = [item[@"windowHeight"] doubleValue];
+        step.windowID = [item[@"windowID"] integerValue];
+        step.sampleR = [item[@"sampleR"] doubleValue];
+        step.sampleG = [item[@"sampleG"] doubleValue];
+        step.sampleB = [item[@"sampleB"] doubleValue];
+        step.hasSample = [item[@"hasSample"] boolValue];
+        [self.steps addObject:step];
     }
     if (config[@"repeatCount"]) [[NSUserDefaults standardUserDefaults] setInteger:[config[@"repeatCount"] integerValue] forKey:@"repeatCount"];
 }
 
 @end
 
-int main(int argc, const char *argv[]) {
+int main(void) {
     @autoreleasepool {
         NSApplication *app = [NSApplication sharedApplication];
         app.activationPolicy = NSApplicationActivationPolicyRegular;

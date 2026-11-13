@@ -1,16 +1,26 @@
 {
   "manifest_version": 3,
   "name": "网页坐标连点器",
-  "version": "1.0.0",
-  "description": "按坐标与间隔重复点击当前网页，浏览器最小化后仍可继续执行页面内点击。",
-  "permissions": ["storage", "tabs", "scripting"],
+  "version": "1.1.0",
+  "description": "按元素相对位置与间隔重复点击网页，支持 iframe、目标等待和延时余量。",
+  "permissions": ["storage", "tabs", "scripting", "webNavigation"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background.js"
   },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
   "action": {
     "default_title": "网页坐标连点器",
-    "default_popup": "popup.html"
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png"
+    }
   },
   "content_scripts": [
     {

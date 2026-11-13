@@ -3,6 +3,7 @@ const template = document.querySelector('#stepTemplate');
 const messageEl = document.querySelector('#message');
 const statusEl = document.querySelector('#status');
 const repeatEl = document.querySelector('#repeatCount');
+const marginEl = document.querySelector('#delayMargin');
 const markerEl = document.querySelector('#showMarker');
 
 let activeTabId = null;
@@ -10,6 +11,8 @@ let activeTabId = null;
 function addStep(step = { x: 100, y: 100, delay: 1000 }) {
   const row = template.content.firstElementChild.cloneNode(true);
   row.dataset.frameId = String(step.frameId ?? 0);
+  row.dataset.frameUrl = step.frameUrl || '';
+  row.dataset.target = step.target ? JSON.stringify(step.target) : '';
   row.querySelector('.x').value = step.x;
   row.querySelector('.y').value = step.y;
   row.querySelector('.delay').value = step.delay;
@@ -28,12 +31,18 @@ function renumber() {
 }
 
 function readConfig() {
-  const steps = [...stepsEl.children].map((row) => ({
-    x: Number(row.querySelector('.x').value),
-    y: Number(row.querySelector('.y').value),
-    delay: Number(row.querySelector('.delay').value),
-    frameId: Number(row.dataset.frameId) || 0
-  }));
+  const steps = [...stepsEl.children].map((row) => {
+    let target = null;
+    try { target = row.dataset.target ? JSON.parse(row.dataset.target) : null; } catch (_) {}
+    return {
+      x: Number(row.querySelector('.x').value),
+      y: Number(row.querySelector('.y').value),
+      delay: Number(row.querySelector('.delay').value),
+      frameId: Number(row.dataset.frameId) || 0,
+      frameUrl: row.dataset.frameUrl || '',
+      target
+    };
+  });
   if (!steps.length) throw new Error('请至少添加一个点击步骤');
   if (steps.some((s) => !Number.isFinite(s.x) || !Number.isFinite(s.y) || s.x < 0 || s.y < 0)) {
     throw new Error('坐标必须是大于或等于 0 的数字');
@@ -44,8 +53,9 @@ function readConfig() {
   return {
     steps,
     repeatCount: Math.max(0, Math.floor(Number(repeatEl.value) || 0)),
+    delayMargin: Math.min(500, Math.max(0, Number(marginEl.value) || 0)),
     showMarker: markerEl.checked,
-    schemaVersion: 2
+    schemaVersion: 3
   };
 }
 
@@ -124,10 +134,12 @@ async function init() {
   const config = (!legacyDemo && stored.macroConfig) || {
     steps: [],
     repeatCount: 0,
+    delayMargin: 30,
     showMarker: true,
-    schemaVersion: 2
+    schemaVersion: 3
   };
   repeatEl.value = config.repeatCount ?? 0;
+  marginEl.value = config.delayMargin ?? 30;
   markerEl.checked = config.showMarker !== false;
   const picked = stored.pickedSteps;
   (picked?.length ? picked : config.steps).forEach(addStep);
@@ -139,6 +151,7 @@ async function init() {
   try {
     const state = await send('MACRO_STATE');
     setStatus(Boolean(state?.running), state?.running ? `第 ${state.stepIndex + 1} 步` : '');
+    if (state?.error) showMessage(state.error);
   } catch (_) {
     setStatus(false);
   }

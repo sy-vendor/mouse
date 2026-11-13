@@ -10,7 +10,10 @@
     stepIndex: 0,
     completedLoops: 0,
     nextAt: 0,
-    picker: null
+    picker: null,
+    inFlight: false,
+    stepStartedAt: 0,
+    lastError: ''
   };
 
   function clearTimer() {
@@ -20,6 +23,7 @@
 
   function stop() {
     state.running = false;
+    state.inFlight = false;
     clearTimer();
   }
 
@@ -36,9 +40,123 @@
     setTimeout(() => dot.remove(), 300);
   }
 
-  function dispatchClick(x, y) {
-    const target = document.elementFromPoint(x, y);
-    if (!target) return false;
+  function selectorFor(element) {
+    if (!(element instanceof Element)) return '';
+    if (element.id) return `#${CSS.escape(element.id)}`;
+    for (const attribute of ['data-testid', 'data-id', 'aria-label', 'name']) {
+      const value = element.getAttribute(attribute);
+      if (!value) continue;
+      const candidate = `${element.localName}[${attribute}="${CSS.escape(value)}"]`;
+      try { if (document.querySelectorAll(candidate).length === 1) return candidate; } catch (_) {}
+    }
+    const parts = [];
+    let current = element;
+    while (current && current !== document.documentElement && parts.length < 8) {
+      let part = current.localName;
+      const siblings = current.parentElement
+        ? [...current.parentElement.children].filter((item) => item.localName === current.localName)
+        : [];
+      if (siblings.length > 1) part += `:nth-of-type(${siblings.indexOf(current) + 1})`;
+      parts.unshift(part);
+      const candidate = parts.join(' > ');
+      try { if (document.querySelectorAll(candidate).length === 1) return candidate; } catch (_) {}
+      current = current.parentElement;
+    }
+    return parts.join(' > ');
+  }
+
+  function sampleCanvas(canvas, offsetX, offsetY) {
+    if (!(canvas instanceof HTMLCanvasElement) || !canvas.width || !canvas.height) return null;
+    const centerX = Math.min(canvas.width - 1, Math.max(0, Math.round(offsetX * canvas.width)));
+    const centerY = Math.min(canvas.height - 1, Math.max(0, Math.round(offsetY * canvas.height)));
+    const startX = Math.max(0, centerX - 1);
+    const startY = Math.max(0, centerY - 1);
+    const width = Math.min(3, canvas.width - startX);
+    const height = Math.min(3, canvas.height - startY);
+    try {
+      const context2d = canvas.getContext('2d');
+      if (context2d) {
+        const pixels = context2d.getImageData(startX, startY, width, height).data;
+        const totals = [0, 0, 0];
+        for (let index = 0; index < pixels.length; index += 4) {
+          totals[0] += pixels[index]; totals[1] += pixels[index + 1]; totals[2] += pixels[index + 2];
+        }
+        const count = pixels.length / 4;
+        return totals.map((value) => Math.round(value / count));
+      }
+      const gl = canvas.getContext('webgl2') || canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+      if (gl) {
+        const pixels = new Uint8Array(width * height * 4);
+        const readY = Math.max(0, canvas.height - startY - height);
+        gl.readPixels(startX, readY, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+        if (gl.getError() !== gl.NO_ERROR) return null;
+        const totals = [0, 0, 0];
+        for (let index = 0; index < pixels.length; index += 4) {
+          totals[0] += pixels[index]; totals[1] += pixels[index + 1]; totals[2] += pixels[index + 2];
+        }
+        const count = pixels.length / 4;
+        const result = totals.map((value) => Math.round(value / count));
+        return result.some((value) => value !== 0) ? result : null;
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  function canvasMatches(canvas, descriptor) {
+    if (!descriptor.canvasSample) return true;
+    const current = sampleCanvas(canvas, descriptor.offsetX ?? 0.5, descriptor.offsetY ?? 0.5);
+    if (!current) return true;
+    const distance = Math.sqrt(current.reduce((total, value, index) => {
+      const difference = value - descriptor.canvasSample[index];
+      return total + difference * difference;
+    }, 0));
+    return distance <= 100;
+  }
+
+  function describeTarget(event) {
+    const raw = event.target instanceof Element ? event.target : null;
+    const element = raw?.closest('button, a, input, [role="button"], canvas') || raw;
+    if (!element) return null;
+    const rect = element.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    const descriptor = {
+      selector: selectorFor(element),
+      tag: element.localName,
+      offsetX: Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width)),
+      offsetY: Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height)),
+      text: element instanceof HTMLCanvasElement ? '' : (element.textContent || element.getAttribute('aria-label') || '').trim().slice(0, 80)
+    };
+    if (element instanceof HTMLCanvasElement) {
+      descriptor.canvasSample = sampleCanvas(element, descriptor.offsetX, descriptor.offsetY);
+    }
+    return descriptor;
+  }
+
+  function dispatchClick(message) {
+    let target = null;
+    let x = Number(message.x);
+    let y = Number(message.y);
+    if (message.target?.selector) {
+      try { target = document.querySelector(message.target.selector); } catch (_) {}
+      if (!target) return { ok: false, reason: '目标元素尚未出现' };
+      const rect = target.getBoundingClientRect();
+      const style = getComputedStyle(target);
+      if (rect.width <= 0 || rect.height <= 0 || style.display === 'none' || style.visibility === 'hidden') {
+        return { ok: false, reason: '目标元素当前不可见' };
+      }
+      if (message.target.text) {
+        const currentText = (target.textContent || target.getAttribute('aria-label') || '').trim();
+        if (!currentText.includes(message.target.text)) return { ok: false, reason: '目标按钮文字尚未出现' };
+      }
+      if (target instanceof HTMLCanvasElement && !canvasMatches(target, message.target)) {
+        return { ok: false, reason: '目标画面尚未出现' };
+      }
+      x = rect.left + rect.width * (message.target.offsetX ?? 0.5);
+      y = rect.top + rect.height * (message.target.offsetY ?? 0.5);
+    } else {
+      target = document.elementFromPoint(x, y);
+    }
+    if (!target || !Number.isFinite(x) || !Number.isFinite(y)) return { ok: false, reason: '点击位置不可用' };
     const common = { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, view: window };
     try {
       target.dispatchEvent(new PointerEvent('pointerdown', { ...common, pointerId: 1, pointerType: 'mouse', isPrimary: true, buttons: 1 }));
@@ -46,10 +164,10 @@
       target.dispatchEvent(new PointerEvent('pointerup', { ...common, pointerId: 1, pointerType: 'mouse', isPrimary: true, buttons: 0 }));
       target.dispatchEvent(new MouseEvent('mouseup', { ...common, button: 0, buttons: 0 }));
       target.click();
-      return true;
+      return { ok: true, x, y, usedTarget: Boolean(message.target?.selector) };
     } catch (_) {
       target.click?.();
-      return true;
+      return { ok: true, x, y, usedTarget: Boolean(message.target?.selector) };
     }
   }
 
@@ -60,16 +178,39 @@
     state.timer = setTimeout(runStep, wait);
   }
 
-  function runStep() {
-    if (!state.running || !state.config?.steps.length) return;
+  async function runStep() {
+    if (!state.running || state.inFlight || !state.config?.steps.length) return;
+    state.inFlight = true;
     const step = state.config.steps[state.stepIndex];
-    chrome.runtime.sendMessage({
-      type: 'DISPATCH_FRAME_CLICK',
-      frameId: step.frameId ?? 0,
-      x: step.x,
-      y: step.y,
-      showMarker: state.config.showMarker
-    }).catch(() => {});
+    if (!state.stepStartedAt) state.stepStartedAt = Date.now();
+    let response;
+    try {
+      response = await chrome.runtime.sendMessage({
+        type: 'DISPATCH_FRAME_CLICK',
+        frameId: step.frameId ?? 0,
+        frameUrl: step.frameUrl || '',
+        x: step.x,
+        y: step.y,
+        target: step.target || null,
+        showMarker: state.config.showMarker
+      });
+    } catch (_) {
+      response = { ok: false, reason: '页面暂时无法响应' };
+    }
+    state.inFlight = false;
+    if (!state.running) return;
+    if (!response?.ok) {
+      if (Date.now() - state.stepStartedAt < 12000) {
+        state.nextAt = Date.now() + 250;
+        schedule();
+        return;
+      }
+      state.lastError = `第 ${state.stepIndex + 1} 步超时：${response?.reason || '目标未出现'}`;
+      stop();
+      return;
+    }
+    state.stepStartedAt = 0;
+    state.lastError = '';
 
     state.stepIndex += 1;
     if (state.stepIndex >= state.config.steps.length) {
@@ -83,7 +224,8 @@
 
     // Use a wall-clock deadline. If Chrome throttles a hidden tab, the next delay
     // starts from the actual execution time instead of building up timer drift.
-    state.nextAt = Date.now() + Math.max(0, step.delay);
+    const margin = Math.max(0, Number(state.config.delayMargin) || 0);
+    state.nextAt = Date.now() + Math.max(50, step.delay * (1 + margin / 100));
     schedule();
   }
 
@@ -92,6 +234,8 @@
     state.config = config;
     state.stepIndex = 0;
     state.completedLoops = 0;
+    state.stepStartedAt = 0;
+    state.lastError = '';
     state.running = true;
     state.nextAt = Date.now();
     schedule();
@@ -150,7 +294,9 @@
       chrome.runtime.sendMessage({
         type: 'RECORD_CLICK',
         x: event.clientX,
-        y: event.clientY
+        y: event.clientY,
+        frameUrl: location.href,
+        target: describeTarget(event)
       }).catch(() => {});
       cross.style.display = 'block';
       cross.style.left = `${event.clientX}px`;
@@ -169,7 +315,7 @@
     if (message.type === 'MACRO_START' && isTopFrame) { start(message.config); sendResponse({ ok: true }); }
     if (message.type === 'MACRO_STOP' && isTopFrame) { stop(); sendResponse({ ok: true }); }
     if (message.type === 'MACRO_STATE') {
-      sendResponse({ running: state.running, stepIndex: state.stepIndex, completedLoops: state.completedLoops });
+      sendResponse({ running: state.running, stepIndex: state.stepIndex, completedLoops: state.completedLoops, error: state.lastError });
     }
     if (message.type === 'PICK_START' && isTopFrame) { startPicker(); sendResponse({ ok: true }); }
     if (message.type === 'PICKER_ACTIVATE') { activatePicker(); }
@@ -178,8 +324,9 @@
       state.picker.panel.querySelector('[data-label]').textContent = `已录制 ${message.count} 步`;
     }
     if (message.type === 'FRAME_CLICK') {
-      dispatchClick(message.x, message.y);
-      if (message.showMarker) marker(message.x, message.y);
+      const result = dispatchClick(message);
+      if (result.ok && message.showMarker) marker(result.x, result.y);
+      sendResponse(result);
     }
   });
 
